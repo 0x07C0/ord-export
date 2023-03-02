@@ -1,3 +1,8 @@
+use std::io::BufWriter;
+use sha3::{Sha3_256, Digest};
+use rustc_serialize::hex::ToHex;
+use indicatif::{ProgressBar, ProgressStyle};
+
 use super::*;
 
 pub mod epochs;
@@ -45,6 +50,8 @@ pub(crate) enum Subcommand {
   Traits(traits::Traits),
   #[clap(subcommand, about = "Wallet commands")]
   Wallet(wallet::Wallet),
+  #[clap(about = "Export text records to a csv file")]
+  Export,
 }
 
 impl Subcommand {
@@ -67,6 +74,61 @@ impl Subcommand {
       Self::Supply => supply::run(),
       Self::Traits(traits) => traits.run(),
       Self::Wallet(wallet) => wallet.run(options),
+      Self::Export => {
+        let index = Index::open(&options)?;
+        let file_name = chrono::offset::Utc::now().format("%d-%m-%Y_%H-%M.csv");
+        let file_name = format!("{file_name}");
+        let file = std::fs::File::create(file_name)?;
+        let buffer = BufWriter::new(file);
+        let mut csv = csv::Writer::from_writer(buffer);
+        csv.write_record(&["hash", "timestamp", "text", "link"])?;
+        let ref mut from = None;
+        let (_, prev, _) = index.get_latest_inscriptions_with_prev_and_next(1, None)?;
+        let progress_bar = ProgressBar::new(prev.expect("No inscriptions found."));
+        progress_bar.set_position(0);
+        progress_bar.set_style(
+          ProgressStyle::with_template("[exporting] {wide_bar} {pos}/{len}").unwrap(),
+        );
+        loop {
+          let (inscs, prev, _) = index.get_latest_inscriptions_with_prev_and_next(1000, *from)?;
+          if prev == None {
+            break;
+          }
+          *from = prev;
+          for insc in inscs {
+            let insc_data = index.get_inscription_by_id(insc)?;
+            let insc_time = index.get_inscription_entry(insc)?;
+            if let Some(data) = insc_data {
+              match data.media() {
+                Media::Text => {
+                  if let Some(text) = data.body() {
+                    let mut hasher = Sha3_256::new();
+                    hasher.update(text);
+                    let hash = hasher.finalize();
+                    let text = String::from_utf8_lossy(text);
+                    let datetime = chrono::NaiveDateTime::from_timestamp_millis(
+                      insc_time.unwrap().timestamp as i64 * 1000,
+                    )
+                    .unwrap();
+                    let datetime = DateTime::<Utc>::from_utc(datetime, Utc);
+                    csv.write_record(&[
+                      hash[..].to_hex(),
+                      datetime.to_rfc3339(),
+                      text.to_string(),
+                      format!("https://ordinals.com/inscription/{insc}"),
+                    ])?;
+                  }
+                }
+                _ => { /* Ignore non-text records */ }
+              }
+            }
+            progress_bar.inc(1);
+          }
+          csv.flush()?;
+        }
+        progress_bar.finish_and_clear();
+        Ok(())
+      }
     }
   }
 }
