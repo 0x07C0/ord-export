@@ -89,6 +89,7 @@ impl Subcommand {
         progress_bar.set_style(
           ProgressStyle::with_template("[exporting] {wide_bar} {pos}/{len}").unwrap(),
         );
+        let mut seen = std::collections::hash_set::HashSet::new();
         loop {
           let (inscs, prev, _) = index.get_latest_inscriptions_with_prev_and_next(1000, *from)?;
           if prev == None {
@@ -105,7 +106,11 @@ impl Subcommand {
                     let mut hasher = Sha3_256::new();
                     hasher.update(text);
                     let hash = hasher.finalize();
-                    let text = String::from_utf8_lossy(text);
+                    let text = String::from_utf8_lossy(text).to_string();
+                    if seen.contains(&text) {
+                      continue;
+                    }
+                    seen.insert(text.clone());
                     let datetime = chrono::NaiveDateTime::from_timestamp_millis(
                       insc_time.unwrap().timestamp as i64 * 1000,
                     )
@@ -114,7 +119,7 @@ impl Subcommand {
                     csv.write_record(&[
                       hash[..].to_hex(),
                       datetime.to_rfc3339(),
-                      text.to_string(),
+                      text,
                       format!("https://ordinals.com/inscription/{insc}"),
                     ])?;
                   }
